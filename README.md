@@ -1,4 +1,4 @@
-# Uno Discord Bot
+# Discord Bot
 
 ## Setup
 
