@@ -85,7 +85,7 @@ class GameState:
     def __init__(self, players):
         self.players = players
         self.turn = 0
-        self.direction = "left"
+        self.direction = random.choice(("cw", "ccw"))
         self.board_top = random.choice(CARDS)
         self.board_history = []
 
@@ -122,11 +122,15 @@ class GameState:
 
         board_status = str(self.board_top)
 
-        await ctx.send(cards_status + "\n" + board_status)
+        await ctx.send(cards_status + "\n" + board_status + "\n" + self.direction)
 
-    async def play(self, ctx, player, card):
-        print(f"{player.member.id}: play {str(card)}")
+    async def play(self, ctx, player, card_idx):
+        card = player.cards[card_idx]
+
+        print(f"{player.member.id}: play {card}")
         if self.can_play(card):
+            card = player.cards.pop(card_idx)
+
             if card.variant == "change_color":
                 msg = await ctx.send("Playing wild card, please react with the color")
                 for reaction in COLORS_UNICODE:
@@ -149,6 +153,22 @@ class GameState:
                 self.board_history.append(self.board_top)
                 card.color = color_name
                 self.board_top = card
+            elif card.variant == "reverse":
+                if self.direction == "cw":
+                    self.direction = "ccw"
+                else:
+                    self.direction = "cw"
+            elif card.variant == "skip":
+                pass
+            elif card.variant == "+2":
+                pass
+            elif card.variant == "+4":
+                pass
+            else:
+                self.board_history.append(self.board_top)
+                self.board_top = card
+        else:
+            await ctx.reply("You cannot play this card")
 
 
 intents = discord.Intents.default()
@@ -157,127 +177,140 @@ intents.messages = True
 intents.reactions = True
 
 bot = commands.Bot(command_prefix="++")
-bot_state = {}
-game_states = []
-
-
-async def get_state(member):
-    for state in game_states:
-        if state.is_playing(member):
-            return state
-    return None
 
 
 def to_color_name(unicode_color):
     return COLORS_UNICODE_NAME[unicode_color]
 
 
-@bot.command(help="Greeting!")
-async def hello(ctx):
-    await ctx.send("Hello!")
+class UnoGame(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+        self.bot_state = {}
+        self.game_states = []
 
+    async def get_state(self, member):
+        for state in self.game_states:
+            if state.is_playing(member):
+                return state
+        return None
 
-@bot.command(name="uno", help="Start an Uno game with mentioned users")
-async def start_uno_game(ctx):
-    state = await get_state(ctx.message.author)
-    if state is not None:
-        await ctx.send(
-            "{}, you are already in a game".format(ctx.message.author.mention())
-        )
-        return
+    @commands.command(help="Greeting!")
+    async def hello(self, ctx):
+        await ctx.send("Hello!")
 
-    if len(ctx.message.mentions) == 0:
-        await ctx.send("Please mention user(s) that you want to play the game with")
-        return
+    @commands.command(name="uno", help="Start an Uno game with mentioned users")
+    async def start_uno_game(self, ctx):
+        state = await self.get_state(ctx.message.author)
+        if state is not None:
+            await ctx.send(
+                "{}, you are already in a game".format(ctx.message.author.mention)
+            )
+            return
 
-    players = []
-    p = Player(ctx.author)
-    p.draw(STARTING_CARDS)
-    players.append(p)
-    for member in ctx.message.mentions:
-        p = Player(member)
+        if len(ctx.message.mentions) == 0:
+            await ctx.send("Please mention user(s) that you want to play the game with")
+            return
+
+        players = []
+        p = Player(ctx.author)
         p.draw(STARTING_CARDS)
         players.append(p)
+        for member in ctx.message.mentions:
+            p = Player(member)
+            p.draw(STARTING_CARDS)
+            players.append(p)
 
-    state = GameState(players)
-    game_states.append(state)
+        state = GameState(players)
+        self.game_states.append(state)
 
-    cards_status = ""
-    for player in state.players:
-        cards_status += player.to_public_string() + "\n"
+        cards_status = ""
+        for player in state.players:
+            cards_status += player.to_public_string() + "\n"
 
-    board_status = str(state.board_top)
+        board_status = str(state.board_top)
 
-    await ctx.send(f"Welcome to the game!\n" + cards_status + "\n" + board_status)
+        await ctx.send(
+            f"Welcome to the game!\n"
+            + cards_status
+            + "\n"
+            + board_status
+            + "\n"
+            + state.direction
+        )
+
+    @commands.command(name="play", help="Play the card at position n")
+    async def play_card(self, ctx, *args):
+        state = await self.get_state(ctx.message.author)
+        if state is None:
+            await ctx.send("You are not in a game")
+            return
+
+        if len(args) == 0 or len(args) > 1:
+            await ctx.send("Need a card position in the hand.")
+            return
+
+        if not state.is_turn(ctx.message.author):
+            # TODO check for jump-in if enable.
+            await ctx.send("Not your turn")
+            return
+
+        player = state[ctx.message.author.id]
+        try:
+            card_idx = int(args[0]) - 1
+            if card_idx < 0 or card_idx >= len(player.cards):
+                await ctx.send(
+                    "Card position needs to be from {} to {}".format(
+                        1, len(player.cards)
+                    )
+                )
+                return
+            await state.play(ctx, player, card_idx)
+        except ValueError:
+            ctx.send(
+                "Card position needs to be from {} to {}".format(1, len(player.cards))
+            )
+
+    @commands.command(name="cards", help="Show your hand")
+    async def show_cards(self, ctx):
+        state = await self.get_state(ctx.message.author)
+        if state is None:
+            await ctx.send("You are not in the game")
+
+        player = state[ctx.message.author.id]
+        await ctx.send(player.to_private_string())
+
+    @commands.command(name="uno-status")
+    async def get_uno_status(self, ctx):
+        state = await self.get_state(ctx.message.author)
+        if state is None:
+            await ctx.send("You are not in the game")
+
+        await state.display_status(ctx)
+
+    @commands.command(name="uno-give-wild", help="Give wild card to user")
+    async def add_wild(self, ctx):
+        state = await self.get_state(ctx.message.author)
+        if state is None:
+            await ctx.send("You are not in the game")
+        player = state[ctx.message.author.id]
+        card = Card("change_color", "wild")
+        player.cards.append(card)
+
+    @commands.command(name="incr", help="Increase the counter")
+    async def increase_counter(self, ctx):
+        if "counter" not in self.bot_state:
+            self.bot_state["counter"] = 0
+        self.bot_state["counter"] += 1
+        await ctx.send("counter increase!")
+
+    @commands.command(name="value", help="Show the counter value")
+    async def get_value(self, ctx):
+        value = self.bot_state["counter"]
+        await ctx.send(f"value is {value}")
 
 
-@bot.command(name="play", help="Play the card at position n")
-async def play_card(ctx, *args):
-    state = await get_state(ctx.message.author)
-    if state is None:
-        await ctx.send("You are not in a game")
-        return
-
-    if len(args) == 0 or len(args) > 1:
-        await ctx.send("Need a card position in the hand.")
-        return
-
-    if not state.is_turn(ctx.message.author):
-        # TODO check for jump-in if enable.
-        await ctx.send("Not your turn")
-        return
-
-    player = state[ctx.message.author.id]
-    try:
-        card_idx = int(args[0]) - 1
-        card = player.cards.pop(card_idx)
-        await state.play(ctx, player, card)
-    except ValueError:
-        ctx.send("Card position needs to be from {} to {}".format(1, len(player.cards)))
-
-
-@bot.command(name="cards", help="Show your hand")
-async def show_cards(ctx):
-    state = await get_state(ctx.message.author)
-    if state is None:
-        await ctx.send("You are not in the game")
-
-    player = state[ctx.message.author.id]
-    await ctx.send(player.to_private_string())
-
-
-@bot.command(name="uno-status")
-async def get_uno_status(ctx):
-    state = await get_state(ctx.message.author)
-    if state is None:
-        await ctx.send("You are not in the game")
-
-    await state.display_status(ctx)
-
-
-@bot.command(name="uno-give-wild", help="Give wild card to user")
-async def add_wild(ctx):
-    state = await get_state(ctx.message.author)
-    if state is None:
-        await ctx.send("You are not in the game")
-    player = state[ctx.message.author.id]
-    card = Card("change_color", "wild")
-    player.cards.append(card)
-
-
-@bot.command(name="incr", help="Increase the counter")
-async def increase_counter(ctx):
-    if "counter" not in bot_state:
-        bot_state["counter"] = 0
-    bot_state["counter"] += 1
-    await ctx.send("counter increase!")
-
-
-@bot.command(name="value", help="Show the counter value")
-async def get_value(ctx):
-    value = bot_state["counter"]
-    await ctx.send(f"value is {value}")
-
+bot.add_cog(UnoGame(bot))
 
 if __name__ == "__main__":
     load_dotenv()
